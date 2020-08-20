@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import warnings
-from collections import _tuplegetter
-from typing import NamedTuple, NamedTupleMeta
+from typing import NamedTupleMeta
 import unittest
 
 import typing
@@ -38,6 +37,10 @@ class AlgType(type):
         attrs.setdefault("__annotations__", {})  # set if needed
         attrs["__annotations__"].update(annotations)
 
+        # TODO : currently small inconsistency when called dynamically or statically in the resolution of annotations
+        #   one is ForwardRef, the other is not. calling get_type_hints fixes the problem however
+        #   cf tests: check __annotations__ to see the problem.
+
         # delegate to a namedtuple (to not have to mess around with inheritance and more metaclasses)
         ntt = NamedTupleMeta.__new__(NamedTupleMeta, typename, bases, attrs)
 
@@ -72,6 +75,29 @@ class AlgType(type):
         # Just to allow keyword arguments
         super(AlgType, self).__init__(typename, bases, attrs)
 
+    def __getitem__(self, item: typing.Union[str, list]) -> AlgType:  # a mapping to subtypes...
+        th = typing.get_type_hints(self._namedtuple_)
+        if isinstance(item, str):
+            item = [item]
+
+        if isinstance(item, list):
+            if item == list(self._namedtuple_._fields):
+                return self
+            else:
+                annots = {}
+                deflts = {}
+                for i in item:
+                    if i not in self._namedtuple_._fields:
+                        raise TypeError(f"{i} is not a subtype of {self}")
+                    else:
+                        annots.update({i: th[i]})
+                        deflts.update({i: self._namedtuple_._field_defaults[i]})
+
+                return AlgType(f"{self.__name__}[{item}]", attrs={
+                        **deflts,  # access default values and pass them
+                        "__annotations__": annots
+                    })
+
     # def __call__(self, *args, **kwargs):
     #     # instantiation
     #
@@ -85,7 +111,7 @@ class AlgType(type):
     #     return inst
 
     def __add__(self, other: AlgType):
-        " Categorical Product "
+        " Categorical Product. using + for similarity with nametuple append operator + "
         newattrs = {
             **self._namedtuple_._field_defaults,
             **other._namedtuple_._field_defaults,
@@ -98,68 +124,66 @@ class AlgType(type):
         PT = AlgType(self.__name__ + other.__name__, attrs=newattrs)
         return PT
 
-    def __sub__(self, other: AlgType):
-        raise NotImplementedError
+    # def __sub__(self, other: AlgType):
+    #     " removes a subtype. leveraging getitem "
+    #
+    #     remnames = []
+    #     for attT in other:
+    #         remnames.append(attT.__name__)
+    #
+    #     for myattT in self:
+    #
+    #     return self[remnames]
+    #
+    #
+    #     raise NotImplementedError
+
+    # TODO : this is hacky. We should strive for a more "proper" type system... whenever time permits...
 
 
 class TestAlgType(unittest.TestCase):
 
-    def instantiation(self, cls):
-        # test instantiation pos
-        inst = cls(51)
-        assert inst.attr == 51
-
-        # test instantiation keyword
-        inst = cls(attr=51)
-        assert inst.attr == 51
-
-        # test instantiation default
-        inst = cls()
-        assert inst.attr == 42
-
-        # TODO : test typecheck (mypy ?)
-
-    # TODO : hypothesis
-    def test_algtype_dyncall(self):
-
-        AT = AlgType("TestType", attrs={
-            'attr': 42  # default semantics ! as for named tuple! inferring type from value...
-        })
-
-        assert type(AT) is AlgType
-        assert AT.__annotations__['attr'] == int
-        # TODO : asserting signature of __new__
-
-        self.instantiation(AT)
-
-    def test_algtype_metaclass(self):
+    tested_type = None
+    def setUp(self) -> None:
+    # TODO : hypothesis to generate various types and test them all...
 
         class MyTestClass(metaclass=AlgType):
             attr: int = 42
 
-        assert type(MyTestClass) is AlgType
-        assert MyTestClass.__annotations__['attr'] == typing.ForwardRef('int')  # WHY NOT int type ? because nested class ??
+        self.tested_type = MyTestClass
+
+    def test_algtype_new(self):
+
+        assert type(self.tested_type) is AlgType
+        assert typing.get_type_hints(self.tested_type)['attr'] == int
         # TODO : asserting signature of __new__
 
-        self.instantiation(MyTestClass)
+        # test instantiation pos
+        inst = self.tested_type(51)
+        assert inst.attr == 51
+
+        # test instantiation keyword
+        inst = self.tested_type(attr=51)
+        assert inst.attr == 51
+
+        # test instantiation default
+        inst = self.tested_type()
+        assert inst.attr == 42
 
         # TODO : test typecheck (mypy ?)
 
     def test_algtype_add(self):
 
-        AT = AlgType("AType", attrs={
-            'attr': 42  # default
-        })
-
+        # relying on dynamic type creation here...
         BT = AlgType("BType", attrs={
             'bttr': 51,  # default
             '__annotations__': {'bttr': float}  # hint, not enforced !
         })
 
-        ABT = AT + BT
+        ABT = self.tested_type + BT
         assert type(ABT) is AlgType
-        assert ABT.__annotations__['attr'] == int
-        assert ABT.__annotations__['bttr'] == float
+        assert typing.get_type_hints(ABT)['attr'] == int
+        assert typing.get_type_hints(ABT)['bttr'] == float
 
         # test instantiation pos
         inst = ABT(51)
@@ -177,6 +201,31 @@ class TestAlgType(unittest.TestCase):
         assert inst.bttr == 51
 
         # TODO : test typecheck (mypy ?)
+
+    def test_algtype_getitem(self):
+        # property to access the data attribute in the instance
+        assert isinstance(self.tested_type.attr, property)
+
+        # however we can also access its type via Type[attribute_name]... which is the same as the current one (only one attr).
+        assert self.tested_type['attr'] == self.tested_type
+
+        with self.assertRaises(TypeError):
+            self.tested_type['does_not_exist']
+
+        #  we can also pass a list to get multiple attrs (tested more via __sub__)
+        assert self.tested_type[['attr']] == self.tested_type
+
+
+
+class TestAlgTypeDynamic(TestAlgType):
+
+    def setUp(self) -> None:
+        # replacing tested_type with a dynamic one. but running same tests
+        AT = AlgType("TestType", attrs={
+            'attr': 42  # default semantics ! as for named tuple! inferring type from value...
+        })
+
+        self.tested_type = AT
 
 
 if __name__ == '__main__':
