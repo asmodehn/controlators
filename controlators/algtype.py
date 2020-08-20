@@ -11,6 +11,7 @@ import typing
 class AlgType(type):
 
     def __new__(mcls, typename: str, bases: typing.Optional[typing.Tuple] = None, attrs: typing.Optional[typing.Dict] = None):
+        # although unused here, 'bases' is needed to be compatible with metaclass usage.
 
         if attrs is None:
             attrs = {}
@@ -46,7 +47,8 @@ class AlgType(type):
         # encapsulating namedtuple among attributes, overriding attrs with same name
         #  => we want the "default" semantic over the "class constant" semantic...
         tdict = {'_namedtuple_': ntt, **attrs, **{
-            f: property(lambda s: getattr(s._namedtuple_, f))  # accessing tuplegetters via property
+            # accessing tuplegetters via property (careful to bind f properly here!)
+            f: property(lambda s, ff=f: getattr(s._namedtuple_, ff))
             for f in ntt._fields
         }}
 
@@ -67,7 +69,8 @@ class AlgType(type):
         return kls
 
     def __init__(self, typename: str, bases: typing.Optional[typing.Tuple] = None, attrs: typing.Optional[typing.Dict] = None):
-        pass
+        # Just to allow keyword arguments
+        super(AlgType, self).__init__(typename, bases, attrs)
 
     # def __call__(self, *args, **kwargs):
     #     # instantiation
@@ -81,18 +84,18 @@ class AlgType(type):
     #
     #     return inst
 
-    def append(self, other: AlgType):
+    def __add__(self, other: AlgType):
         " Categorical Product "
-        dict = {
-            **self._field,
-            **other._fields,
+        newattrs = {
+            **self._namedtuple_._field_defaults,
+            **other._namedtuple_._field_defaults,
             '__annotations__': {
                 **self.__annotations__,
                 **other.__annotations__
             }
         }
 
-        PT = AlgType(name=self.__name__ + other.__name__, dict=dict)
+        PT = AlgType(self.__name__ + other.__name__, attrs=newattrs)
         return PT
 
     def __sub__(self, other: AlgType):
@@ -142,20 +145,39 @@ class TestAlgType(unittest.TestCase):
 
         # TODO : test typecheck (mypy ?)
 
-    # def test_algtype_append(self):
-    #
-    #     AT = AlgType("AType", dict={
-    #         'attr': 42  # constant
-    #     })
-    #
-    #     BT = AlgType("AType", dict={
-    #         'bttr': 51.0,  # constant
-    #         '__annotations__': {'bttr': float}
-    #     })
-    #
-    #     ABT = AT.append(BT)
-    #     assert type(ABT) is AlgType
-    #     assert AT.attr == 42
+    def test_algtype_add(self):
+
+        AT = AlgType("AType", attrs={
+            'attr': 42  # default
+        })
+
+        BT = AlgType("BType", attrs={
+            'bttr': 51,  # default
+            '__annotations__': {'bttr': float}  # hint, not enforced !
+        })
+
+        ABT = AT + BT
+        assert type(ABT) is AlgType
+        assert ABT.__annotations__['attr'] == int
+        assert ABT.__annotations__['bttr'] == float
+
+        # test instantiation pos
+        inst = ABT(51)
+        assert inst.attr == 51  #set value
+        assert inst.bttr == 51  # default
+
+        # test instantiation keyword
+        inst = ABT(bttr=42)
+        assert inst.attr == 42  # default
+        assert inst.bttr == 42  # set value
+
+        # test instantiation default
+        inst = ABT()
+        assert inst.attr == 42
+        assert inst.bttr == 51
+
+        # TODO : test typecheck (mypy ?)
+
 
 if __name__ == '__main__':
     unittest.main()
