@@ -12,9 +12,6 @@ class AlgType(type):
     def __new__(mcls, typename: str, bases: typing.Optional[typing.Tuple] = None, attrs: typing.Optional[typing.Dict] = None):
         # although unused here, 'bases' is needed to be compatible with metaclass usage.
 
-        if attrs is None:
-            attrs = {}
-
         if bases is not None and len(bases) >0:
             warnings.warn("'bases' argument should be empty for proper Algebraic Types. Only typing.NamedTuple will be used for implementation.")
             # TODO : make warning point to user callsite...
@@ -23,6 +20,9 @@ class AlgType(type):
             for i in type_arr:
                 if i is AlgType:
                     raise RuntimeError("You cannot subclass a AlgType class")
+
+        if attrs is None:
+            return Void  # no attributes == the Empty Type. name is ignored. #TODO : typevar maybe ? alias ?
 
         # deducting annotations from attrs if needed
         # to unify the dynamic_call and metaclass behavior: default value instead of immutable constant
@@ -75,13 +75,20 @@ class AlgType(type):
         # Just to allow keyword arguments
         super(AlgType, self).__init__(typename, bases, attrs)
 
+    def __contains__(self, item):
+        if isinstance(item, str):
+            item = [item]
+        return sum(i in self._namedtuple_._fields for i in item) == len(item)  # all True (False is 0)
+
     def __getitem__(self, item: typing.Union[str, list]) -> AlgType:  # a mapping to subtypes...
         th = typing.get_type_hints(self._namedtuple_)
         if isinstance(item, str):
             item = [item]
 
         if isinstance(item, list):
-            if item == list(self._namedtuple_._fields):
+            if len(item) == 0:
+                return Void
+            elif item == list(self._namedtuple_._fields):
                 return self
             else:
                 annots = {}
@@ -97,6 +104,14 @@ class AlgType(type):
                         **deflts,  # access default values and pass them
                         "__annotations__": annots
                     })
+
+    def __iter__(self):
+        for f in self._namedtuple_._fields:
+            yield self[f]  # leveraging getitem
+
+    def __eq__(self, other):
+        return (self._namedtuple_._field_defaults == other._namedtuple_._field_defaults and
+                typing.get_type_hints(self._namedtuple_) == typing.get_type_hints(other._namedtuple_))
 
     # def __call__(self, *args, **kwargs):
     #     # instantiation
@@ -124,21 +139,23 @@ class AlgType(type):
         PT = AlgType(self.__name__ + other.__name__, attrs=newattrs)
         return PT
 
-    # def __sub__(self, other: AlgType):
-    #     " removes a subtype. leveraging getitem "
-    #
-    #     remnames = []
-    #     for attT in other:
-    #         remnames.append(attT.__name__)
-    #
-    #     for myattT in self:
-    #
-    #     return self[remnames]
-    #
-    #
-    #     raise NotImplementedError
+    def __sub__(self, other: AlgType):
+        " removes a subtype."
+        excludes = []
+        for att_name in other._namedtuple_._fields:
+            excludes.append(att_name)
+
+        remain = [f for f in self._namedtuple_._fields if f not in excludes]
+
+        return self[remain]
+
 
     # TODO : this is hacky. We should strive for a more "proper" type system... whenever time permits...
+
+
+class Void(metaclass=AlgType):
+    " The Empty Type"
+    pass
 
 
 class TestAlgType(unittest.TestCase):
@@ -202,6 +219,10 @@ class TestAlgType(unittest.TestCase):
 
         # TODO : test typecheck (mypy ?)
 
+    def test_algtype_contains(self):
+        assert 'attr' in self.tested_type
+        assert 'what_is_this' not in self.tested_type
+
     def test_algtype_getitem(self):
         # property to access the data attribute in the instance
         assert isinstance(self.tested_type.attr, property)
@@ -215,6 +236,19 @@ class TestAlgType(unittest.TestCase):
         #  we can also pass a list to get multiple attrs (tested more via __sub__)
         assert self.tested_type[['attr']] == self.tested_type
 
+    def test_algtype_iter(self):
+        for fT in self.tested_type:
+            assert fT is self.tested_type  # only one attr ! -> we iterate on itself, only once.
+
+    def test_eq(self):
+        assert self.tested_type == self.tested_type
+
+        # TODO: more tests !
+
+    def test_algtype_sub(self):
+        assert self.tested_type - self.tested_type is Void
+
+        # TODO : more tests
 
 
 class TestAlgTypeDynamic(TestAlgType):
