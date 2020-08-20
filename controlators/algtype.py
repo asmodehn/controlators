@@ -24,11 +24,24 @@ class AlgType(type):
                 if i is AlgType:
                     raise RuntimeError("You cannot subclass a AlgType class")
 
+        # deducting annotations from attrs if needed
+        # to unify the dynamic_call and metaclass behavior: default value instead of immutable constant
+        annotations = attrs.get("__annotations__", {})
+        for n, a in attrs.items():
+            # CAREFUL with "__*" special case !
+            if not n.startswith("__") and n not in annotations:
+                # attempt to deduce type if there is a default value
+                annotations[n] = type(a)
+                # on Error : set to typing.Any
+                # TODO
+        attrs.setdefault("__annotations__", {})  # set if needed
+        attrs["__annotations__"].update(annotations)
+
         # delegate to a namedtuple (to not have to mess around with inheritance and more metaclasses)
         ntt = NamedTupleMeta.__new__(NamedTupleMeta, typename, bases, attrs)
 
         # retrieve annotations from namedtuple since they might have been processed once more than the ones we have here
-        attrs['__annotations__'].update(ntt.__annotations__)
+        attrs.get('__annotations__', {}).update(ntt.__annotations__)
 
         # encapsulating namedtuple among attributes, overriding attrs with same name
         #  => we want the "default" semantic over the "class constant" semantic...
@@ -52,6 +65,9 @@ class AlgType(type):
 
         kls.__new__ = inst_new
         return kls
+
+    def __init__(self, typename: str, bases: typing.Optional[typing.Tuple] = None, attrs: typing.Optional[typing.Dict] = None):
+        pass
 
     # def __call__(self, *args, **kwargs):
     #     # instantiation
@@ -85,15 +101,33 @@ class AlgType(type):
 
 class TestAlgType(unittest.TestCase):
 
+    def instantiation(self, cls):
+        # test instantiation pos
+        inst = cls(51)
+        assert inst.attr == 51
+
+        # test instantiation keyword
+        inst = cls(attr=51)
+        assert inst.attr == 51
+
+        # test instantiation default
+        inst = cls()
+        assert inst.attr == 42
+
+        # TODO : test typecheck (mypy ?)
+
     # TODO : hypothesis
-    # def test_algtype_dyncall(self):
-    #
-    #     AT = AlgType("TestType", dict={
-    #         'attr': 42  # constant
-    #     })
-    #
-    #     assert type(AT) is AlgType
-    #     assert AT.attr == 42
+    def test_algtype_dyncall(self):
+
+        AT = AlgType("TestType", attrs={
+            'attr': 42  # default semantics ! as for named tuple! inferring type from value...
+        })
+
+        assert type(AT) is AlgType
+        assert AT.__annotations__['attr'] == int
+        # TODO : asserting signature of __new__
+
+        self.instantiation(AT)
 
     def test_algtype_metaclass(self):
 
@@ -104,17 +138,7 @@ class TestAlgType(unittest.TestCase):
         assert MyTestClass.__annotations__['attr'] == typing.ForwardRef('int')  # WHY NOT int type ? because nested class ??
         # TODO : asserting signature of __new__
 
-        # test instantiation pos
-        inst = MyTestClass(51)
-        assert inst.attr == 51
-
-        # test instantiation keyword
-        inst = MyTestClass(attr=51)
-        assert inst.attr == 51
-
-        # test instantiation default
-        inst = MyTestClass()
-        assert inst.attr == 42
+        self.instantiation(MyTestClass)
 
         # TODO : test typecheck (mypy ?)
 
